@@ -1,7 +1,24 @@
 #!/bin/bash
+################################################# Run checks
+# Show help
+show_help() {
+	echo "[*] Usage: sudo chameleonic.sh <interface> <bettercap_file>"
+}
+
+if ! [ $(id -u) = 0 ]; then
+	echo "[-] Run this as root!"
+	exit 1
+fi
 interface=$1
+bettercap_file=$2
 if [ "$interface" == "" ]; then
 	echo "[-] No interface provided."
+	show_help
+	exit
+fi
+if [ "$bettercap_file" == "" ]; then
+	echo "[-] No bettercap file path provided."
+	show_help
 	exit
 fi
 interface_up=$(ip a show "$interface" up 2>&1)
@@ -13,20 +30,7 @@ elif [[ -z $interface_up ]]; then
 	exit
 fi
 
-echo "[*] Running network reconnaissance using ARP and reverse DNS..."
-bettercap -iface $interface -eval "net.probe on; sleep 30; q" > bettercap_network_recon2.txt
-echo "[*] Disabling interface $interface"
-ifconfig $interface down
-mostcommonvendor=$(cat bettercap_network_recon2.txt | grep "detected as" | rev | cut -d'(' -f1 | rev | cut -d')' -f1 | sort | uniq -c | sort -nr | head -n1 | cut -d' ' -f7-)
-echo "[*] Most common hardware vendor on the network is $mostcommonvendor"
-macaddvendor=$(sudo macchanger -l | grep "$mostcommonvendor" | cut -d ' ' -f 3 | shuf -n 1)
-macrandomsegment=$(printf "%02x:%02x:%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
-macchanger -m "$macaddvendor:$macrandomsegment" $interface >/dev/null 2>&1
-echo "[*] Set new MAC address on eth3: $macaddvendor:$macrandomsegment ($mostcommonvendor)"
-
-names=$(cat bettercap_network_recon.txt | grep "detected as" | awk -F'detected as' '{print $1}' | grep -oP '\(\K[^\)]*' | sort -uf)
-echo "[*] Found $(echo $names | wc -w) computers, analysing names..."
-IFS=$'\n' read -r -d '' -a names_array <<< "$names"
+################################################# Functions
 
 # Function to find substrings of a given string
 find_substrings() {
@@ -83,17 +87,59 @@ find_largest_common() {
 
     echo "$largest_common"
 }
-largest_common=$(find_largest_common names_array)
-echo "[*] Largest Most Common String: $largest_common"
 
-while true
-do
-	random_number=$((RANDOM % 999 + 1))
-	hostname_new="$largest_common$random_number"
-	if [[ ! ${names_array[@]} =~ $hostname_new ]]; then
-		break
+################################################# Main logic
+
+# MAC stuff
+if ! [ -e $bettercap_file ]; then
+	echo "[*] Running network reconnaissance using ARP and reverse DNS..."
+	bettercap -no-colors -iface $interface -eval "net.probe on; sleep 30; q" > "$bettercap_file"
+fi
+echo "[*] Disabling interface $interface"
+ifconfig $interface down
+mostcommonvendor=$(cat "$bettercap_file" | grep "detected as" | rev | cut -d'(' -f1 | rev | cut -d')' -f1 | sort | uniq -c | sort -nr | head -n1 | cut -c 9-)
+
+if [[ ! -z $mostcommonvendor ]]; then
+	echo "[*] Most common hardware vendor on the network is $mostcommonvendor"
+	mostcommonvendor_MAC=$(cat "$bettercap_file" | grep "detected as"| grep "$mostcommonvendor" | awk -F'detected as' '{print $2}' | cut -d " " -f 2 | sort -uf | cut -c1-8 | sort | uniq -c | sort -nr | head -n 1 | cut -c9- )
+	macrandomsegment=$(printf "%02x:%02x:%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+	macchanger -m "$mostcommonvendor_MAC:$macrandomsegment" $interface >/dev/null 2>&1
+	echo "[*] Set new MAC address on eth3: $mostcommonvendor_MAC:$macrandomsegment ($mostcommonvendor)"
+else
+	echo "[*] Not enough hostnames identified... will assign a random MAC address"
+	macchanger -A $interface >/dev/null 2>&1
+fi
+
+# Hostname stuff
+names=$(cat "$bettercap_file" | grep "detected as" | awk -F'detected as' '{print $1}' | grep -oP '\(\K[^\)]*' | sort -uf)
+names_count=$(echo $names | wc -w)
+if (( $names_count < 3 )); then
+	echo "[-] Not enough hostnames identified... will assign hostname 'unknown'"
+	hostname_new="unknown"
+else
+	echo "[*] Found $names_count computers, analysing names..."
+	IFS=$'\n' read -r -d '' -a names_array <<< "$names"
+	largest_common=$(find_largest_common names_array)
+	if [ -z "$largest_common" ]; then
+		echo "[-] Could not find a reliable hostname pattern... will assign hostname 'unknown'"
+		hostname_new="unknown"
+	else
+		echo "[*] Largest Most Common String: $largest_common"
+
+		while true
+		do
+			random_number=$((RANDOM % 999 + 1))
+			hostname_new="$largest_common$random_number"
+			if [[ ! ${names_array[@]} =~ $hostname_new ]]; then
+				break
+			fi
+		done
 	fi
-done
+fi
+hostname_old=$(hostnamectl hostname)
+
+# Removing past hostname from DNS cache and configure the new one 
+sed -i "/$hostname_old/d" /etc/hosts
 echo "[*] Assigning hostname: $hostname_new"
 hostnamectl set-hostname "$hostname_new"
 echo "127.0.1.1	$hostname_new" >> /etc/hosts
