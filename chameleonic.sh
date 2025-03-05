@@ -88,9 +88,118 @@ find_largest_common() {
     echo "$largest_common"
 }
 
+# After the largest most common string is found, check the length of all hostnames containing it and return the most common length 
+find_length_of_hostnames_with_most_common_string() {
+	largest_common_length=$(printf "%s\n" "${names[@]}" | grep $1 | awk '{print length}' | sort | uniq -c | sort -nr | head -n1 | awk '{print $2}')
+	echo $largest_common_length
+}
+
+# Function to classify character types
+classify_chars() {
+	local str="$1"
+	if [[ "$str" =~ ^[0-9]+$ ]]; then
+		echo "Digits only"
+	elif [[ "$str" =~ ^[A-Z]+$ ]]; then
+		echo "Uppercase letters only"
+	elif [[ "$str" =~ ^[a-z]+$ ]]; then
+		echo "Lowercase letters only"
+	elif [[ "$str" =~ ^[A-Za-z]+$ ]]; then
+		echo "Alphanumeric (letters only, both cases)"
+	elif [[ "$str" =~ ^[0-9A-Z]+$ ]]; then
+		echo "Alphanumeric (digits + uppercase)"
+	elif [[ "$str" =~ ^[0-9a-z]+$ ]]; then
+		echo "Alphanumeric (digits + lowercase)"
+	elif [[ "$str" =~ ^[0-9A-Za-z]+$ ]]; then
+		echo "Alphanumeric (digits + both cases)"
+	else
+		echo "Mixed characters"
+	fi
+}
+
+# Function to generate random characters based on type
+generate_random_chars() {
+	local length="$1"
+	case "$most_common_type" in
+		"Digits only") chars="0123456789" ;;
+		"Uppercase letters only") chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ" ;;
+		"Lowercase letters only") chars="abcdefghijklmnopqrstuvwxyz" ;;
+		"Alphanumeric (letters only, both cases)") chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" ;;
+		"Alphanumeric (digits + uppercase)") chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" ;;
+		"Alphanumeric (digits + lowercase)") chars="abcdefghijklmnopqrstuvwxyz0123456789" ;;
+		"Alphanumeric (digits + both cases)") chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" ;;
+	*) chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz" ;; # Fallback for mixed characters
+	esac
+	tr -dc "$chars" < /dev/urandom | head -c "$length"
+}
+
+# Hostname generation
+generate_new_hostname(){
+	names=$(cat "$bettercap_file" | grep "detected as" | awk -F'detected as' '{print $1}' | grep -oP '\(\K[^\)]*' | cut -d '.' -f 1 | sort -uf)
+	names_count=$(echo $names | wc -w)
+	if (( $names_count < 3 )); then
+		echo "[-] Not enough hostnames identified... will assign hostname 'unknown'"
+		hostname_new="unknown"
+	else
+		echo "[*] Found $names_count computers, analysing names..."
+		IFS=$'\n' read -r -d '' -a names_array <<< "$names"
+		largest_common=$(find_largest_common names_array)
+		if [ -z "$largest_common" ]; then
+			echo "[-] Could not find a reliable hostname pattern... will assign hostname 'unknown'"
+			hostname_new="unknown"
+		else
+			echo "[*] Largest most common string: $largest_common"
+			largest_common_full_hostname_length=$(find_length_of_hostnames_with_most_common_string $largest_common)
+			echo "[*] Most common length of hostnames containing $largest_common is $largest_common_full_hostname_length"
+			# Extract remaining parts
+			remaining_parts=()
+			hostnames_with_common_string=$(echo $names | tr ' ' '\n' | grep $largest_common)
+			IFS=$'\n' read -r -d '' -a hostnames_with_common_string_array <<< "$hostnames_with_common_string"
+			for str in "${hostnames_with_common_string_array[@]}"; do
+				remaining_parts+=("${str:((${#largest_common}))}")
+			done
+			# Find the most common character type in remaining substrings
+			declare -A char_type_count
+			for part in "${remaining_parts[@]}"; do
+				type="$(classify_chars "$part")"
+				((char_type_count["$type"]++))
+			done
+			most_common_type="$(printf "%s\n" "${!char_type_count[@]}" | sort -nr -k2 | head -n1 | sed 's/ [0-9]*$//')"
+			echo "[*] Most common characters type in remaining substrings: $most_common_type"
+			# Determine the length of the most common remaining substring
+			remaining_length=$(($largest_common_full_hostname_length-${#largest_common}))
+			echo "[*] Remaining characters to fill: $remaining_length"
+			# Generate a new serial with the common prefix and random characters of the same type
+			random_part=$(generate_random_chars $((remaining_length)))
+			hostname_new="$largest_common$random_part"
+		fi
+	fi
+}
+
+is_hostname_unique() {
+    local hostname="$1"
+    if nslookup "$hostname" >/dev/null 2>&1; then
+        return 1  # Hostname exists, return failure
+    else
+        return 0  # Hostname is unique, return success
+    fi
+}
+
+get_unique_hostname() {
+    while :; do
+        generate_new_hostname  # Generate a new hostname
+        echo "[*] Checking if hostname '$hostname_new' is not in use..."
+        if is_hostname_unique "$hostname_new"; then
+            echo "[+] Hostname '$hostname_new' is not in use!"
+            break
+        else
+            echo "[*] Hostname '$hostname_new' is already in use, generating a new one..."
+        fi
+    done
+}
+
 ################################################# Main logic
 
-# MAC stuff
+# MAC generation
 if ! [ -e $bettercap_file ]; then
 	echo "[*] Running network reconnaissance using ARP and reverse DNS..."
 	bettercap -no-colors -iface $interface -eval "net.probe on; sleep 30; q" > "$bettercap_file"
@@ -110,32 +219,7 @@ else
 	macchanger -A $interface >/dev/null 2>&1
 fi
 
-# Hostname stuff
-names=$(cat "$bettercap_file" | grep "detected as" | awk -F'detected as' '{print $1}' | grep -oP '\(\K[^\)]*' | sort -uf)
-names_count=$(echo $names | wc -w)
-if (( $names_count < 3 )); then
-	echo "[-] Not enough hostnames identified... will assign hostname 'unknown'"
-	hostname_new="unknown"
-else
-	echo "[*] Found $names_count computers, analysing names..."
-	IFS=$'\n' read -r -d '' -a names_array <<< "$names"
-	largest_common=$(find_largest_common names_array)
-	if [ -z "$largest_common" ]; then
-		echo "[-] Could not find a reliable hostname pattern... will assign hostname 'unknown'"
-		hostname_new="unknown"
-	else
-		echo "[*] Largest Most Common String: $largest_common"
-
-		while true
-		do
-			random_number=$((RANDOM % 999 + 1))
-			hostname_new="$largest_common$random_number"
-			if [[ ! ${names_array[@]} =~ $hostname_new ]]; then
-				break
-			fi
-		done
-	fi
-fi
+get_unique_hostname
 hostname_old=$(hostnamectl hostname)
 
 # Removing past hostname from DNS cache and configure the new one 
@@ -143,7 +227,6 @@ sed -i "/$hostname_old/d" /etc/hosts
 echo "[*] Assigning hostname: $hostname_new"
 hostnamectl set-hostname "$hostname_new"
 echo "127.0.1.1	$hostname_new" >> /etc/hosts
-ifconfig eth3 up
 echo "[*] Enabling interface $interface"
 ifconfig $interface up
 echo "[*] Done"
