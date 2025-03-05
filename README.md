@@ -14,4 +14,7 @@ sudo ./chameleonic.sh <interface> <bettercap_file>
 ```
 If you do not currently have a bettercap output file, chameleonic will generate one with `bettercap -no-colors -iface $interface -eval "net.probe on; sleep 30; q" > "$bettercap_file"`.
 If you already have a file, specify it into <bettercap_file> and chameleonic will use this one as inspiration for hostnames / MAC addresses.
+
+
+
 ![chameleonicusage](https://github.com/user-attachments/assets/b373c615-7f7b-475b-881e-6ccc969873b4)
