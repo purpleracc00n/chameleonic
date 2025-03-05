@@ -1,7 +1,7 @@
 # chameleonic
 Script to help with blending into a network environment.
 
-Scans the local network using bettercap (ARP and reverse DNS) in order to identify devices, mainly for their MAC addresses and hostnames. 
+Scans the local network using bettercap in order to identify devices, mainly for their MAC addresses and hostnames. 
 
 Uses this information to identify the most common vendor and assign a MAC address similar to most of the network devices. If not enough data was collected, will assign a random MAC.
 
