@@ -287,5 +287,3 @@ Something failed after the interface was taken over, so it may have no address. 
 - The firewall assumes the default behaviour of each persona. Networks whose workstations allow ping or file sharing by policy answer differently; use `-a ping` or `-a 445` to match them.
 - ISC dhclient is deprecated upstream but still packaged in Kali.
 
-![chameleonicusage](https://github.com/user-attachments/assets/b373c615-7f7b-475b-881e-6ccc969873b4)
-*(screenshot of an earlier version)*
